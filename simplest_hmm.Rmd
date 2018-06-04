@@ -1,0 +1,313 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library("ggplot2")
+```
+
+
+```{r}
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+emisMtx = matrix(c(1,0,0,
+                  0,1,0,
+                  0,0,1),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+
+T = 200
+obs_states = c(-2,-1,1)
+#sigma = 0.9
+N = length(obs_states)
+M = dim(transMtx)[1]
+
+x = rep(NA,T)
+x[1] = sample(1:M,1,prob = pi)
+for (i in 2:T){
+  x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+}
+
+y = rep(NA,T)
+for (i in 1:T){
+  y[i] = sample(x = obs_states,size = 1,prob = emisMtx[x[i],])
+}
+
+plot(x,type="l")
+```
+
+
+```{r}
+## T: length of obs; N: num of obs; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: start prob, M * 1
+my_viterbi <- function(obs,states,transMtx,emisMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  N = length(states)
+  
+  D = array(NA,dim=c(M,T))
+  G = array(NA,dim=c(M,T))
+  
+  G[,1] =  log(emisMtx[,which(states == obs[1])]) + log(pi)
+  
+
+  for (j in 2:T){
+    py_x = emisMtx[,which(states == obs[j])]
+    for (i in 1:M){
+      tmp = G[,j-1] + log(transMtx[,i]) + log(py_x[i])
+      G[i,j] = max(tmp)
+      D[i,j] = which.max(tmp)
+    }
+  }
+  
+  return(list("D" = D,"G" = G[,T]))
+}
+
+my_backtrace <- function(D,G_T,k){
+  M = length(G_T)
+  T = dim(D)[2]
+  x = rep(NA,T)
+
+  
+  x[T] = which.max(G_T)
+
+  for (t in (T-1):1){
+    x[t] = D[x[t+1],t+1]
+  }
+  return(x)
+}
+```
+
+```{r}
+result = my_viterbi(y,obs_states,transMtx,emisMtx,pi)
+tmp = my_backtrace(result$D,result$G)
+datcomp = data.frame(id = 1:T,x_real = x,x_pred = tmp)
+library(reshape2)
+datm = melt(datcomp,id.vars = 1)
+par(mfrow = c(2,1))
+plot(x,type="l"); plot(tmp,type = "l")
+p <- ggplot(datm,aes(x = id, y = value))+
+  geom_line(aes(color = (variable == "x_real"), group = variable))+
+  scale_color_manual(values = c("blue","red"),labels = c("x_viterbi","x_real"))
+ 
+  
+p
+```
+
+
+```{r}
+## T: length of obs; N: num of obs; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: start prob, M * 1
+my_forward <- function(obs,states,transMtx,emisMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  A = array(NA,dim=c(M,T))
+  
+  A[,1] =  emisMtx[,which(states == obs[1])] * pi
+  
+  for (j in 2:T){
+    py_x = emisMtx[,which(states == obs[j])]
+    for (i in 1:M){
+      A[i,j] = sum(A[,j-1] * transMtx[,i] * py_x[i])
+    }
+    #A[,j] = A[,j] / sum(A[,j])
+  }
+  
+  return(A)
+}
+
+my_backward <- function(obs,states,transMtx,emisMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  B = array(NA,dim=c(M,T))
+  
+  B[,T] = B[,T] ^ 0
+  
+  for (j in (T-1):1){
+    py_x_p1 = emisMtx[,which(states == obs[j+1])]
+    for (i in 1:M){
+      B[i,j] = sum(B[,j+1] * transMtx[i,] * py_x_p1)
+    }
+    #B[,j] = B[,j] / sum(B[,j])
+  }
+  
+  return(B)
+  }
+```
+
+```{r}
+A = my_forward(y,obs_states,transMtx,emisMtx,pi)
+B = my_backward(y,obs_states,transMtx,emisMtx,pi)
+prob = A * B
+```
+
+
+```{r}
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+emisMtx = matrix(c(1,0,0,
+                  0,1,0,
+                  0,0,1),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+
+D =20
+T = 200
+obs_states = c(-2,-1,1)
+#sigma = 0.9
+N = length(obs_states)
+M = dim(transMtx)[1]
+
+seqs = c()
+for (i in 1:D){
+  x = rep(NA,T)
+  x[1] = sample(1:M,1,prob = pi)
+  for (i in 2:T){
+    x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+  }
+
+  y = rep(NA,T)
+  for (i in 1:T){
+    y[i] = sample(x = obs_states,size = 1,prob = emisMtx[x[i],])
+  }
+  seqs = rbind(seqs,y)
+}
+#seqs 
+```
+
+```{r}
+my_em_single = function(seq, M, N,states,pi,transMtx,emisMtx){
+  T = length(seq)
+  ## calcualte p(x)
+  PX = array(NA,dim=c(M,T))
+  A = my_forward(obs=seq,states = states, transMtx = transMtx, emisMtx = emisMtx, pi = pi)
+  B = my_backward(obs=seq,states = states, transMtx = transMtx, emisMtx = emisMtx, pi = pi)
+  AB = A * B; PY = sum(A[,T])
+  PX = AB/PY ##P(x_n|Y)
+  
+  ## calculate pxx
+  PXX = array(0,dim = c(M,M))
+  for (k in 2:T){
+    py_x = emisMtx[,which(states == seq[k])];
+    tmp = array(0,dim = c(M,M))
+    
+    for (j in 1:M){
+      for (i in 1:M){
+        tmp[i,j] = A[i,k-1] * transMtx[i,j] * py_x[j] * B[j,k]
+      }
+    }
+    PXX = PXX + tmp
+  }
+  llk = log(sum(A[,T]))
+  return(list("PX" = PX,"PXX" = PXX/PY,"LLK"=llk))
+}
+
+my_em= function(seqs, M, N,states){
+  T = dim(seqs)[2] ; D = dim(seqs)[1];
+  pi = runif(3); pi = pi/sum(pi);
+  transMtx = matrix(runif(M*M),ncol = M); transMtx = t(apply(transMtx,1,function(x) x/sum(x)))
+  emisMtx = matrix(runif(M*N),ncol = N); emisMtx = t(apply(emisMtx,1,function(x) x/sum(x)))
+
+  #seq = seqs
+  iter = 1
+  epsilon = 1e-10
+  llk_pre = -100000000; llk_current = -1000000
+  while(llk_current - llk_pre > epsilon){
+  #while(iter<100){  
+    llk_pre = llk_current
+    sum_pi = rep(0,M); sum_xx2 = matrix(0,nrow = M,ncol = M); sum_x2 = rep(0,M); sum_xy1 = matrix(0,nrow = M, ncol=N); sum_x1 = rep(0,M);
+    llk_current = 0;
+    for (num in 1:D){
+      seq = seqs[num,]
+      output = my_em_single(seq = seq,M = M,N = N,pi = pi, states = states,transMtx = transMtx,emisMtx = emisMtx)
+      llk_current = llk_current + output$LLK
+      
+      sum_pi = sum_pi + output$PX[,1];
+      sum_xx2 = sum_xx2 + output$PXX
+      sum_x2 = sum_x2 + apply(output$PX[,-T],1,sum);
+      
+      I_y = t(sapply(obs_states,function(x) seq==x))
+      tmp = matrix(0,nrow = M,ncol = N)
+      for (i in 1:M){
+        for (j in 1:N){
+          tmp[i,j] = sum(output$PX[i,] * I_y[j,])
+        }
+      }
+      sum_xy1 = sum_xy1 + tmp
+      
+      sum_x1 = sum_x1 + apply(output$PX,1,sum);
+    }
+    
+    
+    pi = sum_pi/D ### update pi
+    #transMtx = t(apply(sum_xx2/sum_x2,1,function(x) x/sum(x))) ## update transMtx
+    transMtx = sum_xx2/sum_x2
+    ## update emisMtx
+    #emisMtx = t(apply(sum_xy1/sum_x1,1,function(x) x/sum(x)))
+    emisMtx = sum_xy1 / sum_x1
+    #print(transMtx)
+    iter = iter + 1
+    print(llk_current)
+    
+  }
+  
+  return(list("pi"=pi,"transMtx"=transMtx,"emisMtx"=emisMtx,"llk"=llk_current,"iter"=iter))
+}
+```
+
+```{r}
+#seqs = rbind(y,y)
+resultem = my_em(seqs,3,3,obs_states)
+resultem
+pi2 = resultem$pi;transMtx2 = resultem$transMtx; emisMtx2 = resultem$emisMtx;
+A2 = my_forward(y,obs_states,transMtx2,emisMtx2,pi2)
+A = my_forward(y,obs_states,transMtx,emisMtx,pi)
+sum(A2[,200]);sum(A[,200])
+```
+
+
+test
+```{r}
+library(HMM)
+hmm = initHMM(as.character(1:M), as.character(obs_states), transProbs=transMtx,emissionProbs=emisMtx)
+print(hmm)
+## viterbi
+observations = as.character(y)
+viterbi = viterbi(hmm,observations)
+print(viterbi)
+
+bw = baumWelch(hmm,observations,100)
+```
+
+```{r}
+library("HiddenMarkov")
+Pi <- transMtx
+delta <- pi
+hmm_model <- dthmm(x = seqs[2,], Pi = Pi, delta = delta, distn = "norm",pm = list(mean=c(,0.1,0), sd=c(0.2,0.2,0.2)))
+dthmm()
+tmp <- simulate(hmm_model, nsim=100)
+tmp = hmm_model
+tmp$x = seqs[2,]
+result = BaumWelch(tmp)
+    #    use above parameter values as initial values
+    y <- BaumWelch(x)
+    print(summary(y))
+    print(logLik(y))
+    hist(residuals(y))
+    #   check parameter estimates
+    print(sum(y$delta))
+```
+
+
+
+
+
+
