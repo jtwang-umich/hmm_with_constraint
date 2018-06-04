@@ -1,0 +1,283 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library("ggplot2")
+```
+
+
+```{r}
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+mu = c(-2,-1,1)
+sigma = rep(0.5,3)
+
+T = 100
+N = length(mu)
+M = dim(transMtx)[1]
+
+x = rep(NA,T)
+x[1] = sample(1:M,1,prob = pi)
+for (i in 2:T){
+  x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+}
+
+y = rep(NA,T); y_real = rep(NA,T)
+for (i in 1:T){
+  idx = x[i]
+  y_real[i] = mu[idx]
+  y[i] = rnorm(1,y_real[i],sigma[idx])
+}
+
+dat = data.frame(id = 1:T, x = x, y = y, y_real = y_real)
+p <- ggplot(dat,aes(x = id, y = y_real))+
+  geom_line()+
+  geom_point(aes(x = id, y = y),size = 0.5)+
+  xlim(0,T)+
+  ylim(-6,4)
+p
+
+NumberofSegments = length(rle(x)$value)
+NumberofSegments
+```
+
+
+```{r}
+## T: length of obs; N: num of obs; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: start prob, M * 1
+my_viterbi_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  N = length(mu)
+  
+  D = array(NA,dim=c(M,T))
+  G = array(NA,dim=c(M,T))
+  
+  G[,1] =  log(dnorm(obs[1],mu,sigma)) + log(pi)
+  
+
+  for (j in 2:T){
+    py_x = dnorm(obs[j],mu,sigma)
+    for (i in 1:M){
+      tmp = G[,j-1] + log(transMtx[,i]) + log(py_x[i])
+      G[i,j] = max(tmp)
+      D[i,j] = which.max(tmp)
+    }
+  }
+  
+  return(list("D" = D,"G" = G[,T]))
+}
+
+my_backtrace <- function(D,G_T,k){
+  M = length(G_T)
+  T = dim(D)[2]
+  x = rep(NA,T)
+
+  
+  x[T] = which.max(G_T)
+
+  for (t in (T-1):1){
+    x[t] = D[x[t+1],t+1]
+  }
+  return(x)
+}
+```
+
+```{r}
+result = my_viterbi_gaussian(y,mu,sigma,transMtx,pi)
+tmp = my_backtrace(result$D,result$G)
+datcomp = data.frame(id = 1:T,x_real = x,x_pred = tmp)
+library(reshape2)
+datm = melt(datcomp,id.vars = 1)
+par(mfrow = c(2,1))
+plot(x,type="l"); plot(tmp,type = "l")
+p <- ggplot(datm,aes(x = id, y = value))+
+  geom_line(aes(color = (variable == "x_real"), group = variable))+
+  scale_color_manual(values = c("blue","red"),labels = c("x_viterbi","x_real"))
+p
+```
+
+
+```{r}
+## T: length of obs; N: num of obs; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: start prob, M * 1
+my_forward_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  A = array(NA,dim=c(M,T))
+  
+  A[,1] =  dnorm(obs[1],mu,sigma) * pi
+  
+  for (j in 2:T){
+    py_x = dnorm(obs[j],mu,sigma)
+    for (i in 1:M){
+      A[i,j] = sum(A[,j-1] * transMtx[,i] * py_x[i])
+    }
+    #A[,j] = A[,j] / sum(A[,j])
+  }
+  
+  return(A)
+}
+
+my_backward_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  B = array(NA,dim=c(M,T))
+  
+  B[,T] = B[,T] ^ 0
+  
+  for (j in (T-1):1){
+    py_x_p1 = dnorm(obs[j+1],mu,sigma)
+    for (i in 1:M){
+      B[i,j] = sum(B[,j+1] * transMtx[i,] * py_x_p1)
+    }
+    #B[,j] = B[,j] / sum(B[,j])
+  }
+  
+  return(B)
+  }
+```
+
+```{r}
+A = my_forward_gaussian(y,mu,sigma,transMtx,pi)
+B = my_backward_gaussian(y,mu,sigma,transMtx,pi)
+prob = A * B
+```
+
+
+```{r}
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+mu = c(-2,-1,1)
+sigma = c(0.9,0.9,0.9)
+
+D = 20
+T = 100
+N = length(mu)
+M = dim(transMtx)[1]
+
+seqs = c()
+for (i in 1:D){
+  x = rep(NA,T)
+  x[1] = sample(1:M,1,prob = pi)
+  for (i in 2:T){
+    x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+  }
+
+  y = rep(NA,T); y_real = rep(NA,T)
+  for (i in 1:T){
+    idx = x[i]
+    y_real[i] = mu[idx]
+    y[i] = rnorm(1,y_real[i],sigma[idx])
+  }
+  seqs = rbind(seqs,y)
+}
+#seqs 
+```
+
+```{r}
+my_em_gaussian_single = function(seq, M,mu,sigma,pi,transMtx){
+  T = length(seq)
+  ## calcualte p(x)
+  PX = array(NA,dim=c(M,T))
+  A = my_forward_gaussian(obs=seq,mu = mu,sigma = sigma, transMtx = transMtx, pi = pi)
+  B = my_backward_gaussian(obs=seq,mu = mu,sigma = sigma, transMtx = transMtx, pi = pi)
+  AB = A * B; llk = log(sum(A[,T]))
+  PX = AB/exp(llk) ##P(x_n|Y)
+  
+  ## calculate pxx
+  PXX = array(0,dim = c(M,M))
+  for (k in 2:T){
+    #py_x = dnorm(seq[k],mu,sigma);
+    lpy_x = dnorm(seq[k],mu,sigma,log = TRUE);
+    tmp = array(0,dim = c(M,M))
+    
+    for (j in 1:M){
+      for (i in 1:M){
+        tmp[i,j] = log(A[i,k-1])  + log(transMtx[i,j]) + lpy_x[j] + log(B[j,k])
+      }
+    }
+    PXX = PXX + exp(tmp-llk)
+  }
+  
+  return(list("PX" = PX,"PXX" = PXX,"LLK"=llk))
+}
+
+my_em_gaussian = function(seqs, M, mu_init = runif(N,min = min(seqs),max = max(seqs)),sigma_init = rep(runif(1,0,1),M)){
+  T = dim(seqs)[2] ; D = dim(seqs)[1];
+  pi = runif(3); pi = pi/sum(pi);
+  transMtx = matrix(runif(M*M),ncol = M); transMtx = t(apply(transMtx,1,function(x) x/sum(x)))
+  mu = mu_init
+  sigma = sigma_init
+  
+  #seq = seqs
+  iter = 1
+  epsilon = 1e-12
+  llk_pre = -100000000; llk_current = -1000000
+  while(llk_current - llk_pre > epsilon){
+  #while(iter<100){  
+    llk_pre = llk_current
+    sum_pi = rep(0,M); sum_xx2 = matrix(0,nrow = M,ncol = M); sum_x2 = rep(0,M); sum_xy1 = matrix(0,nrow = M, ncol=N); sum_x1 = rep(0,M);
+    sum_xy_mean = rep(0,N); sum_xy_sq = rep(0,N)
+    llk_current = 0;
+    
+    for (num in 1:D){
+      seq = seqs[num,]
+      output = my_em_gaussian_single(seq = seq,M = M,mu = mu,sigma = sigma,pi = pi,transMtx = transMtx) ####
+      llk_current = llk_current + output$LLK
+      
+      sum_pi = sum_pi + output$PX[,1];
+      sum_xx2 = sum_xx2 + output$PXX
+      sum_x2 = sum_x2 + apply(output$PX[,-T],1,sum);
+      
+      
+      sum_x1 = sum_x1 + apply(output$PX,1,sum);
+      
+      sum_xy_mean = sum_xy_mean + output$PX %*% matrix(seq,ncol = 1)
+      sum_xy_sq = sum_xy_sq + apply(output$PX * (matrix(seq,ncol = T,nrow = M,byrow = TRUE) - matrix(mu,ncol = T,nrow = M))^2,1,sum)
+    }
+    
+    
+    pi = sum_pi/D ### update pi
+    #transMtx = t(apply(sum_xx2/sum_x2,1,function(x) x/sum(x))) ## update transMtx
+    transMtx = sum_xx2/sum_x2
+    ## update emisMtx
+    #emisMtx = t(apply(sum_xy1/sum_x1,1,function(x) x/sum(x)))
+    #emisMtx = sum_xy1 / sum_x1
+    ## update mu
+    mu = sum_xy_mean / sum_x1
+    ## update sigma
+    sigma = sqrt(sum_xy_sq / sum_x1)
+    print(mu)
+    iter = iter + 1
+    print(llk_current)
+    
+  }
+  
+  return(list("pi"=pi,"transMtx"=transMtx,"mu" = mu,"sigma" = sigma,"llk"=llk_current,"iter"=iter))
+}
+```
+
+```{r}
+#seqs = rbind(y,y)
+resultem = my_em_gaussian(seqs,3)
+resultem
+pi2 = resultem$pi;transMtx2 = resultem$transMtx; mu2 = resultem$mu; sigma2 = resultem$sigma;
+#A2 = my_forward_gaussian(y,mu2,sigma2,transMtx2,pi2)
+#A = my_forward_gaussian(y,mu,sigma,transMtx,pi)
+#sum(A2[,100]);sum(A[,100])
+```
