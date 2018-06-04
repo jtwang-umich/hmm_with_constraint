@@ -1,6 +1,5 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "hmm with k segments constraints"
 ---
 
 ```{r}
@@ -17,7 +16,7 @@ pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
 sigma = rep(0.9,3)
 
-T = 100
+T = 200
 N = length(mu)
 M = dim(transMtx)[1]
 
@@ -340,8 +339,8 @@ lmy_backward_constraint <- function(obs,mu,sigma,transMtx,pi,kmax){
 ```
 
 ```{r}
-lA = lmy_forward_constraint(y,mu,sigma,transMtx,pi,5)
-lB = lmy_backward_constraint(y,mu,sigma,transMtx,pi,5)
+lA = lmy_forward_constraint(y,mu,sigma,transMtx,pi,NumberofSegments)
+lB = lmy_backward_constraint(y,mu,sigma,transMtx,pi,NumberofSegments)
 lprob = lA +lB
 
 A = my_forward_constraint(y,mu,sigma,transMtx,pi)
@@ -353,6 +352,7 @@ prob = A * B
 #B = my_backward_constraint(y,mu,sigma,transMtx,pi)
 #prob = A * B
 sum(prob[,,T]);sum(prob[,,1],na.rm = TRUE)
+sum(exp(lprob[,,T]));sum(exp(lprob[,,1]),na.rm = TRUE)
 ```
 
 
@@ -365,7 +365,7 @@ mu = c(-2,-1,1)
 sigma = rep(0.2,3)
 
 D = 10
-T = 100
+T = 1000
 KMAX = 1
 
 N = length(mu)
@@ -459,8 +459,7 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
       output = my_em_constraint_single(seq = seq,M = M,mu = mu,sigma = sigma,pi = pi,transMtx = transMtx,kmax = kmax)
       
       llk_current = llk_current + output$LLK
-      print(output$LLK)
-      
+   
       sum_pi = sum_pi + exp(output$lPX[,1]); #####
       sum_xx2 = sum_xx2 + rowSums(exp(output$lPXX),dims = 2,na.rm = TRUE);
       sum_x2 = sum_x2 + exp(apply(output$lPX[,-T],1,logSumExp));
@@ -479,7 +478,7 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
     ## update sigma
     sigma = sqrt(sum_xy_sq / sum_x1)
     iter = iter + 1
-    print(iter)
+    print(paste(iter,llk_current))
   }
   
   return(list("pi"=pi,"transMtx"=transMtx,"mu" = mu,"sigma" = sigma,"llk"=llk_current,"iter"=iter))
@@ -488,6 +487,7 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
 
 ```{r}
 resultem = my_em_constraint(seqs,3,kmax = KMAX)
+resultem
 #logSumExp(lmy_forward_constraint(seqs[2,],resultem$mu,resultem$sigma,resultem$transMtx,resultem$pi,KMAX)[,,T])
 ```
 
