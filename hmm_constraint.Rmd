@@ -362,10 +362,10 @@ transMtx = matrix(c(0.98,0.015,0.005,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
 pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
-sigma = rep(0.2,3)
+sigma = c(0.2,0.3,0.5)
 
-D = 10
-T = 1000
+D = 20
+T = 100
 KMAX = 1
 
 N = length(mu)
