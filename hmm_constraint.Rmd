@@ -14,9 +14,9 @@ transMtx = matrix(c(0.98,0.015,0.005,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
 pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
-sigma = rep(0.9,3)
+sigma = c(0.8,0.9,0.85)
 
-T = 200
+T = 300
 N = length(mu)
 M = dim(transMtx)[1]
 
@@ -52,7 +52,7 @@ NumberofSegments
 ## transMtx: M * M
 ## emisMtx: M * N
 ## pi: start prob, M * 1
-my_viterbi_constraint <- function(obs,mu,sigma,transMtx,pi){
+my_viterbi_constraint <- function(obs,mu,sigma,transMtx,pi,kmax){
   T = length(obs)
   M = length(pi)
   
@@ -362,7 +362,7 @@ transMtx = matrix(c(0.98,0.015,0.005,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
 pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
-sigma = c(0.2,0.3,0.5)
+sigma = c(0.8,0.9,0.85)
 
 D = 20
 T = 100
@@ -486,32 +486,32 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
 ```
 
 ```{r}
+#set.seed(1234)
 resultem = my_em_constraint(seqs,3,kmax = KMAX)
 resultem
 #logSumExp(lmy_forward_constraint(seqs[2,],resultem$mu,resultem$sigma,resultem$transMtx,resultem$pi,KMAX)[,,T])
 ```
 
 ```{r}
-my_path_sampling = function(obs,states,transMtx,emisMtx,pi,SamplesNum,kseg){
+my_path_sampling = function(obs,mu,sigma,transMtx,pi,SamplesNum,kseg){
   T = length(obs)
   M = length(pi)
-  N = length(states)
   samples_x = array(NA,dim=c(SamplesNum,T))
   success = 0
   
   transMtx_NoDiag = transMtx - diag(diag(transMtx))
-  A = my_forward_constraint(obs,states,transMtx,emisMtx,pi)
+  lA = lmy_forward_constraint(obs,mu,sigma,transMtx,pi,kseg)
   
   while(success<SamplesNum){
     x = rep(NA,T); s = kseg;
-    x[T] = sample(1:M,1,prob = A[,kseg,T])
+    x[T] = sample(1:M,1,prob = exp(lA[,kseg,T]))
     for (j in (T-1):1){
       if(j>=s){
         if(s == 1){
           x[j] = x[j+1]
         }else{
-          prob = A[,c(s-1,s),j] * cbind(transMtx_NoDiag[,x[j+1]],diag(diag(transMtx))[,x[j+1]])
-          tmp = sample(1:length(prob),1,prob = c(prob))
+          lprob = lA[,c(s-1,s),j] + log(cbind(transMtx_NoDiag[,x[j+1]],diag(diag(transMtx))[,x[j+1]]))
+          tmp = sample(1:length(lprob),1,prob = c(exp(lprob)))
           x[j] = ifelse(tmp <= M,tmp,tmp-M)
           s = s - (x[j] != x[j+1])
         }
@@ -530,24 +530,27 @@ my_path_sampling = function(obs,states,transMtx,emisMtx,pi,SamplesNum,kseg){
 
 
 ```{r}
-T = 100
-m = c(-2,-1,1)
-N = length(m)
-M = dim(trans_mat)[1]
-trans_mat = matrix(c(0.98,0.015,0.005,
-                     0.005,0.98,0.015,
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+mu = c(-2,-1,1)
+sigma = c(0.8,0.9,0.85)
 
-samples = my_path_sampling(y,m,trans_mat,diag(c(1,1,1)),c(1/3,1/3,1/3),12,6)
+T = 200
+M = dim(transMtx)[1]
+
+
+samples = my_path_sampling(y,mu,sigma,transMtx,pi,12,NumberofSegments)
 par(mfrow = c(3,1))
 for (i in 1:dim(samples)[1]){
   plot(samples[i,],type="l")
 }
-datcomp = data.frame(id = 1:T,x = t(samples))
-library(reshape2)
-datm = melt(datcomp,id.vars = 1)
-p <- ggplot(datm,aes(x = id, y = value))+
-  geom_line()
+#datcomp = data.frame(id = 1:T,x = t(samples))
+#library(reshape2)
+#datm = melt(datcomp,id.vars = 1)
+#p <- ggplot(datm,aes(x = id, y = value))+
+#  geom_line()
 p
 ```
 

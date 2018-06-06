@@ -261,9 +261,8 @@ my_em_gaussian = function(seqs, M, mu_init = runif(N,min = min(seqs),max = max(s
     mu = sum_xy_mean / sum_x1
     ## update sigma
     sigma = sqrt(sum_xy_sq / sum_x1)
-    print(mu)
     iter = iter + 1
-    print(llk_current)
+    print(paste(iter,llk_current))
     
   }
   
@@ -272,6 +271,7 @@ my_em_gaussian = function(seqs, M, mu_init = runif(N,min = min(seqs),max = max(s
 ```
 
 ```{r}
+set.seed(1234)
 #seqs = rbind(y,y)
 resultem = my_em_gaussian(seqs,3)
 resultem
