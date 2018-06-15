@@ -1,0 +1,268 @@
+---
+title: "Bayesian methods for hmm"
+---
+
+Generate simulation data
+```{r}
+set.seed(1234)
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.05,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+mu = c(-2,-1,1)
+sigma = rep(0.5,3)
+
+T = 300
+M = dim(transMtx)[1]
+
+x = rep(NA,T)
+x[1] = sample(1:M,1,prob = pi)
+for (i in 2:T){
+  x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+}
+
+y = rep(NA,T); y_real = rep(NA,T)
+for (i in 1:T){
+  idx = x[i]
+  y_real[i] = mu[idx]
+  y[i] = rnorm(1,y_real[i],sigma[idx])
+}
+
+library('ggplot2')
+dat = data.frame(id = 1:T, x = x, y = y, y_real = y_real)
+p <- ggplot(dat,aes(x = id, y = y_real))+
+  geom_line()+
+  geom_point(aes(x = id, y = y),size = 0.5)+
+  xlim(0,T)+
+  ylim(-6,4)
+p
+
+NumberofSegments = length(rle(x)$value)
+NumberofSegments
+```
+
+
+
+```{r}
+library('rstan')
+scode <- "data {
+  int<lower=1> T; // Number of obs
+  vector[T] y;    // observations
+  int S;  // Number of states
+  vector[S] alpha; // prior for intial prob
+  vector[S] beta; // prior for transition matrix
+}
+parameters {
+  simplex[S] pi; // intial prob
+  simplex[S] A[S]; // transition matrix
+  vector[S] mu;     // mean
+  vector<lower=0>[S] sigma; // sd
+}
+model {
+  target += dirichlet_lpdf(pi | alpha);
+  for(i in 1:S){
+    target += dirichlet_lpdf(A[i] | beta);
+  }
+  for(i in 1:S){
+    target += normal_lpdf(mu[i]|0,1);
+  }
+  for(i in 1:S){
+    target += -2*log(sigma);
+  }
+  {
+  real acc[S];
+  real gamma[S, T];
+  for (i in 1:S)
+    gamma[i, 1] = log(pi[i]) + normal_lpdf(y[1]|mu[i],sigma[i]);
+  for (t in 2:T) {
+    for (j in 1:S) {
+      for (i in 1:S)
+        acc[i] = gamma[i, t-1] + log(A[i, j]) + normal_lpdf(y[t]|mu[j],sigma[j]);
+      gamma[j, t] = log_sum_exp(acc);
+    } 
+  }
+  target += log_sum_exp(gamma[,T]);
+  }
+}
+"
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+hmm_dat <- list(y = y,T = length(y), S = 3, alpha = rep(1,3), beta = rep(1,3))
+fit1 <- stan(model_code = scode, data = hmm_dat, iter = 200, chains = 4)
+fit1
+#plot(fit1)
+```
+
+Forward algorithm likelihood version
+
+```{r}
+library(matrixStats)
+lmy_forward_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  lA = array(NA,dim=c(M,T))
+  
+  lA[,1] =  dnorm(obs[1],mu,sigma,log = TRUE) + log(pi)
+  
+  for (j in 2:T){
+    lpy_x = dnorm(obs[j],mu,sigma,log = TRUE)
+    for (i in 1:M){
+      lA[i,j] = logSumExp(lA[,j-1] + log(transMtx[,i]) + lpy_x[i])
+    }
+  }
+  
+  return(lA)
+}
+```
+
+
+
+FFBS algorithm
+
+```{r}
+my_FFBS = function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  lA = lmy_forward_gaussian(obs,mu,sigma,transMtx,pi)
+  
+
+  x = rep(NA,T);
+  x[T] = sample(1:M,1,prob = exp(lA[,T]-logSumExp(lA[,T])))
+  for (j in (T-1):1){
+    lprob = lA[,j] + log(transMtx[,x[j+1]])
+    x[j] = sample(1:M,1,prob = c(exp(lprob-logSumExp(lprob))))
+  }
+  
+  return(x)
+}
+```
+
+
+FB Gibbs sampler
+by EM versus Markov chain Monte Carlo for Estimation of Hidden Markov Models: A Computational Perspective(2008)
+
+```{r}
+library("gtools")
+FB_sampler <- function(data, K, burnin = 100, thin = 1, num_sample = 1000){
+  ## some constants from data
+  y = data;
+  T = length(y)
+  epsilon = sum(range(y))/2
+  R = diff(range(y))
+  kappa = 1/R^2
+  num = 1
+  
+  ## hyperparameters constant
+  alpha = 2
+  g = 0.2
+  h = 10 / R^2
+  
+  ## random start point
+  pi = rep(1/K,K)
+  A = matrix(rep(1/K,K*K),ncol = K)
+  mu = rnorm(K,epsilon,1/kappa)
+  beta = rgamma(1,g,h)
+  sigma2_inv = rgamma(1,alpha,beta)
+  x = sample(1:K,T,replace = TRUE)
+  
+  ## gibbs sampler
+  ### initialize storage
+  pi_sam = matrix(0,nrow = num_sample,ncol = K)
+  A_sam = array(0,dim=c(K,K,num_sample))
+  mu_sam = matrix(0,nrow = num_sample,ncol = K)
+  beta_sam = rep(0,num_sample)
+  sigma2_inv_sam = rep(0,num_sample)
+  x_sam = matrix(0,nrow = num_sample,ncol = T)
+  
+  ### sampler start
+  #### burnin step
+  for(iter in 1: burnin){
+    sigma2 = 1/sigma2_inv
+    ##### update mu
+    for(i in 1:K){
+      S = sum(y[x==i])
+      n = sum(x==i)
+      mu[i] = rnorm(1,(S+kappa*epsilon*sigma2)/(n+kappa*sigma2),sqrt((sigma2)/(n+kappa*sigma2)))
+    }
+    
+    ##### update sigma2
+    sigma2_inv = rgamma(1,alpha+0.5*T,beta+0.5*sum((y-mu[x])^2))
+    sigma2 = 1/sigma2_inv
+    
+    ##### update beta
+    beta = rgamma(1,g+alpha,h+sigma2_inv)
+    
+    ##### update A
+    N_trans = matrix(0,ncol=K,nrow = K)
+    for(i in 1:T-1)
+      N_trans[x[i],x[i+1]] = N_trans[x[i],x[i+1]] + 1
+    for(i in 1:K){
+      A[i,] = rdirichlet(1,N_trans[i,]+1)
+    }
+    
+    ##### update pi
+    pi = rdirichlet(1,rep(1,K)+(x[1] == 1:K))
+    
+    ##### update x
+    x = my_FFBS(y,mu,sqrt(sigma2),A,pi)
+  }
+  
+  
+  
+  ##### sampling
+  for (iter in 1:(thin*num_sample)){
+    sigma2 = 1/sigma2_inv
+    ##### update mu
+    for(i in 1:K){
+      S = sum(y[x==i])
+      n = sum(x==i)
+      mu[i] = rnorm(1,(S+kappa*epsilon*sigma2)/(n+kappa*sigma2),sqrt((sigma2)/(n+kappa*sigma2)))
+    }
+    
+    ##### update sigma2
+    sigma2_inv = rgamma(1,alpha+0.5*T,beta+0.5*sum((y-mu[x])^2))
+    sigma2 = 1/sigma2_inv
+    
+    ##### update beta
+    beta = rgamma(1,g+alpha,h+sigma2_inv)
+    
+    ##### update A
+    N_trans = matrix(0,ncol=K,nrow = K)
+    for(i in 1:T-1)
+      N_trans[x[i],x[i+1]] = N_trans[x[i],x[i+1]] + 1
+    for(i in 1:K){
+      A[i,] = rdirichlet(1,N_trans[i,]+1)
+    }
+    
+    ##### update pi
+    pi = rdirichlet(1,rep(1,K)+(x[1] == 1:K))
+    
+    ##### update x
+    x = my_FFBS(y,mu,sqrt(sigma2),A,pi)
+  
+    ##### store the samples
+    if(iter%%thin==0){
+      pi_sam[num,] = pi
+      A_sam[,,num] = A
+      mu_sam[num,] = mu
+      beta_sam[num] = beta
+      sigma2_inv_sam[num] = sigma2_inv
+      x_sam[num,] = x
+      num = num + 1
+    }
+  
+  }
+  
+  return(list("pi"=pi_sam,"A"=A_sam,"mu"=mu_sam,"beta"=beta_sam,"sigma2"=1/sigma2_inv_sam,"x"=x_sam))
+}
+
+```
+
+```{r}
+result = FB_sampler(y,3,100,1,1000)
+plot(apply(result$x,2,mean),type="l")
+length(rle(apply(result$x,2,mean))$values)
+```
+

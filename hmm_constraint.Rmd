@@ -8,16 +8,15 @@ library(ggplot2)
 
 
 ```{r}
-#set.seed(1234)
+set.seed(1234)
 transMtx = matrix(c(0.98,0.015,0.005,
                      0.05,0.98,0.015,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
 pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
-sigma = c(0.8,0.9,0.85)
+sigma = c(0.8,0.9,0.85) * 0.5
 
 T = 300
-N = length(mu)
 M = dim(transMtx)[1]
 
 x = rep(NA,T)
@@ -117,7 +116,7 @@ my_backtrace_constraint <- function(D,G,k){
 }
 ```
 
-
+#####Viterbi#######
 
 ```{r}
 result_cons = my_viterbi_constraint(y,mu,sigma,transMtx,pi)
@@ -263,10 +262,6 @@ lmy_forward_constraint <- function(obs,mu,sigma,transMtx,pi,kmax){
 ```
 
 ```{r}
-lA = lmy_forward_constraint(y,mu,sigma,transMtx,pi,T)
-```
-
-```{r}
 ## T: length of obs; N: num of obs; M: num of hidden states
 ## obs: T * 1
 ## transMtx: M * M
@@ -338,6 +333,8 @@ lmy_backward_constraint <- function(obs,mu,sigma,transMtx,pi,kmax){
 }
 ```
 
+#####FB#####
+
 ```{r}
 lA = lmy_forward_constraint(y,mu,sigma,transMtx,pi,NumberofSegments)
 lB = lmy_backward_constraint(y,mu,sigma,transMtx,pi,NumberofSegments)
@@ -362,7 +359,7 @@ transMtx = matrix(c(0.98,0.015,0.005,
                      0.015,0.005,0.98),byrow = TRUE,ncol = 3)
 pi = c(0,0.95,0.05)
 mu = c(-2,-1,1)
-sigma = c(0.8,0.9,0.85)
+sigma = c(0.5,0.9,0.1)
 
 D = 20
 T = 100
@@ -373,19 +370,19 @@ M = dim(transMtx)[1]
 
 seqs = c()
 for (i in 1:D){
-  x = rep(NA,T)
-  x[1] = sample(1:M,1,prob = pi)
+  xx = rep(NA,T)
+  xx[1] = sample(1:M,1,prob = pi)
   for (i in 2:T){
-    x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+    xx[i] = sample(1:M,1,prob = transMtx[xx[i-1],])
   }
-  KMAX = ifelse(length(rle(x)$value)>KMAX,length(rle(x)$value),KMAX)
-  y = rep(NA,T); y_real = rep(NA,T)
+  KMAX = ifelse(length(rle(xx)$value)>KMAX,length(rle(xx)$value),KMAX)
+  yy = rep(NA,T); yy_real = rep(NA,T)
   for (i in 1:T){
-    idx = x[i]
-    y_real[i] = mu[idx]
-    y[i] = rnorm(1,y_real[i],sigma[idx])
+    idx = xx[i]
+    yy_real[i] = mu[idx]
+    yy[i] = rnorm(1,yy_real[i],sigma[idx])
   }
-  seqs = rbind(seqs,y)
+  seqs = rbind(seqs,yy)
 }
 KMAX
 #seqs 
@@ -437,9 +434,9 @@ my_em_constraint_single = function(seq, M,mu,sigma,pi,transMtx,kmax){
 ```
 
 ```{r}
-my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(seqs)),sigma_init = rep(runif(1,0,1),M),kmax = 10){
+my_em_constraint= function(seqs, M,mu_init = runif(M,min = min(seqs),max = max(seqs)),sigma_init = rep(runif(1,0,1),M),kmax = 10){
   T = dim(seqs)[2] ; D = dim(seqs)[1]
-  pi = runif(3); pi = pi/sum(pi);
+  pi = runif(M); pi = pi/sum(pi);
   transMtx = matrix(runif(M*M),ncol = M); transMtx = t(apply(transMtx,1,function(x) x/sum(x)))
   mu = mu_init
   sigma = sigma_init
@@ -451,7 +448,7 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
   while(llk_current - llk_pre > epsilon){
     llk_pre = llk_current
     sum_pi = rep(0,M); sum_xx2 = matrix(0,nrow = M,ncol = M); sum_x2 = rep(0,M); sum_xy1 = matrix(0,nrow = M, ncol=N); sum_x1 = rep(0,M);
-    sum_xy_mean = rep(0,N); sum_xy_sq = rep(0,N)
+    sum_xy_mean = rep(0,M); sum_xy_sq = rep(0,M)
     llk_current = 0;
     
     for (num in 1:D){
@@ -485,9 +482,11 @@ my_em_constraint= function(seqs, M,mu_init = runif(N,min = min(seqs),max = max(s
 }
 ```
 
+#####EM#####
+
 ```{r}
 #set.seed(1234)
-resultem = my_em_constraint(seqs,3,kmax = KMAX)
+resultem = my_em_constraint(seqs,4,kmax = KMAX)
 resultem
 #logSumExp(lmy_forward_constraint(seqs[2,],resultem$mu,resultem$sigma,resultem$transMtx,resultem$pi,KMAX)[,,T])
 ```
@@ -528,6 +527,7 @@ my_path_sampling = function(obs,mu,sigma,transMtx,pi,SamplesNum,kseg){
 }
 ```
 
+#####path sampling#####
 
 ```{r}
 transMtx = matrix(c(0.98,0.015,0.005,
