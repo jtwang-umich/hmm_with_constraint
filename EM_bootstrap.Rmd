@@ -1,0 +1,245 @@
+---
+title: "EM bootstrap (CI)"
+---
+
+```{r}
+library(matrixStats)
+## T: length of obs; N: num of obs; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: start prob, M * 1
+lmy_forward_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  lA = array(NA,dim=c(M,T))
+  
+  lA[,1] =  dnorm(obs[1],mu,sigma,log = TRUE) + log(pi)
+  
+  for (j in 2:T){
+    lpy_x = dnorm(obs[j],mu,sigma,log = TRUE)
+    for (i in 1:M){
+      lA[i,j] = logSumExp(lA[,j-1] + log(transMtx[,i]) + lpy_x[i])
+    }
+  }
+  
+  return(lA)
+}
+
+lmy_backward_gaussian <- function(obs,mu,sigma,transMtx,pi){
+  T = length(obs)
+  M = length(pi)
+  
+  lB = array(NA,dim=c(M,T))
+  
+  lB[,T] = 0
+  
+  for (j in (T-1):1){
+    lpy_x_p1 = dnorm(obs[j+1],mu,sigma,log = TRUE)
+    for (i in 1:M){
+      lB[i,j] = logSumExp(lB[,j+1] + log(transMtx[i,]) + lpy_x_p1)
+    }
+  }
+  
+  return(lB)
+  }
+```
+
+```{r}
+transMtx = matrix(c(0.98,0.015,0.005,
+                     0.005,0.98,0.015,
+                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+pi = c(0,0.95,0.05)
+mu = c(-2,-1,1)
+sigma = c(0.9,0.9,0.9)
+
+D = 20
+T = 100
+N = length(mu)
+M = dim(transMtx)[1]
+
+seqs = c()
+for (i in 1:D){
+  x = rep(NA,T)
+  x[1] = sample(1:M,1,prob = pi)
+  for (i in 2:T){
+    x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+  }
+
+  y = rep(NA,T); y_real = rep(NA,T)
+  for (i in 1:T){
+    idx = x[i]
+    y_real[i] = mu[idx]
+    y[i] = rnorm(1,y_real[i],sigma[idx])
+  }
+  seqs = rbind(seqs,y)
+}
+#seqs 
+```
+
+```{r}
+my_em_gaussian_single = function(seq, M,mu,sigma,pi,transMtx){
+  T = length(seq)
+  ## calcualte p(x)
+  PX = array(NA,dim=c(M,T))
+  lA = lmy_forward_gaussian(obs=seq,mu = mu,sigma = sigma, transMtx = transMtx, pi = pi)
+  lB = lmy_backward_gaussian(obs=seq,mu = mu,sigma = sigma, transMtx = transMtx, pi = pi)
+  lprob = lA + lB
+  llk = logSumExp(lprob[,T])
+  
+  ## calculate px
+  lPX = lprob - llk
+  
+  ## calculate pxx
+  PXX = array(0,dim = c(M,M))
+  for (k in 2:T){
+    lpy_x = dnorm(seq[k],mu,sigma,log = TRUE);
+    tmp = array(0,dim = c(M,M))
+    
+    for (j in 1:M){
+      for (i in 1:M){
+        tmp[i,j] = lA[i,k-1]  + log(transMtx[i,j]) + lpy_x[j] + lB[j,k]
+      }
+    }
+    PXX = PXX + exp(tmp-llk)
+  }
+  
+  return(list("lPX" = lPX,"PXX" = PXX,"LLK"=llk))
+}
+
+my_em_gaussian = function(seqs, M, mu_init = runif(N,min = min(seqs),max = max(seqs)),sigma_init = rep(runif(1,0,1),M)){
+  T = dim(seqs)[2] ; D = dim(seqs)[1];
+  pi = runif(3); pi = pi/sum(pi);
+  transMtx = matrix(runif(M*M),ncol = M); transMtx = t(apply(transMtx,1,function(x) x/sum(x)))
+  mu = mu_init
+  sigma = sigma_init
+  
+  #seq = seqs
+  iter = 1
+  epsilon = 1e-8
+  llk_pre = -100000000; llk_current = -1000000
+  while(llk_current - llk_pre > epsilon){
+  #while(iter<100){  
+    llk_pre = llk_current
+    sum_pi = rep(0,M); sum_xx2 = matrix(0,nrow = M,ncol = M); sum_x2 = rep(0,M); sum_xy1 = matrix(0,nrow = M, ncol=N); sum_x1 = rep(0,M);
+    sum_xy_mean = rep(0,N); sum_xy_sq = rep(0,N)
+    llk_current = 0;
+    
+    for (num in 1:D){
+      seq = seqs[num,]
+      output = my_em_gaussian_single(seq = seq,M = M,mu = mu,sigma = sigma,pi = pi,transMtx = transMtx) ####
+      llk_current = llk_current + output$LLK
+      
+      sum_pi = sum_pi + exp(output$lPX[,1]);
+      sum_xx2 = sum_xx2 + output$PXX
+      sum_x2 = sum_x2 + exp(apply(output$lPX[,-T],1,logSumExp));
+      
+      
+      sum_x1 = sum_x1 + exp(apply(output$lPX,1,logSumExp));
+      
+      sum_xy_mean = sum_xy_mean + exp(output$lPX) %*% matrix(seq,ncol = 1)
+      sum_xy_sq = sum_xy_sq + apply(exp(output$lPX) * (matrix(seq,ncol = T,nrow = M,byrow = TRUE) - matrix(mu,ncol = T,nrow = M))^2,1,sum)
+    }
+    
+    
+    pi = sum_pi/D ### update pi
+    transMtx = sum_xx2/sum_x2
+    ## update mu
+    mu = sum_xy_mean / sum_x1
+    ## update sigma
+    sigma = sqrt(sum_xy_sq / sum_x1)
+    iter = iter + 1
+    #print(paste(iter,llk_current))
+    
+  }
+  
+  return(list("pi"=pi,"transMtx"=transMtx,"mu" = mu,"sigma" = sigma,"llk"=llk_current,"iter"=iter))
+}
+```
+
+```{r}
+set.seed(1234)
+#seqs = rbind(y,y)
+resultem = my_em_gaussian(seqs,3)
+resultem
+pi2 = resultem$pi;transMtx2 = resultem$transMtx; mu2 = resultem$mu; sigma2 = resultem$sigma;
+#A2 = my_forward_gaussian(y,mu2,sigma2,transMtx2,pi2)
+#A = my_forward_gaussian(y,mu,sigma,transMtx,pi)
+#sum(A2[,100]);sum(A[,100])
+```
+
+```{r}
+rearrange_order = function(result){
+  M = length(result$mu)
+  result_new = NULL
+  new_order = sort(result$mu,index.return = TRUE)$ix
+  result_new$mu = result$mu[new_order]
+  result_new$pi = result$pi[new_order]
+  result_new$sigma = result$sigma[new_order]
+  result_new$llk = result$llk
+  
+  result_new$transMtx = array(0,dim = c(M,M))
+  for(i in 1:M){
+    result_new$transMtx[i,] = result$transMtx[new_order[i],new_order]
+  }
+  return(result_new)
+}
+```
+
+```{r}
+generate_seqs = function(mu,sigma,pi,transMtx,D,T){
+  N = length(mu)
+  M = dim(transMtx)[1]
+  
+  seqs = c()
+  for (i in 1:D){
+    x = rep(NA,T)
+    x[1] = sample(1:M,1,prob = pi)
+    for (i in 2:T){
+      x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+    }
+  
+    y = rep(NA,T); y_real = rep(NA,T)
+    for (i in 1:T){
+      idx = x[i]
+      y_real[i] = mu[idx]
+      y[i] = rnorm(1,y_real[i],sigma[idx])
+    }
+    seqs = rbind(seqs,y)
+  }
+  return(seqs)
+}
+```
+
+```{r}
+my_bootstrap = function(seqs,M,iter_num=100){
+  T = dim(seqs)[2] ; D = dim(seqs)[1];
+  
+  mu_all = array(0,dim = c(iter_num,M))
+  sigma_all = array(0,dim = c(iter_num,M))
+  pi_all = array(0,dim = c(iter_num,M))
+  llk_all = rep(0,iter_num)
+  transMtx_all = array(0,dim = c(M,M,iter_num))
+  
+  for(i in 1:iter_num){
+    resultem = rearrange_order(my_em_gaussian(seqs,M))
+    mu_all[i,] = resultem$mu
+    sigma_all[i,] = resultem$sigma
+    pi_all[i,] = resultem$pi
+    llk_all[i] = resultem$llk
+    transMtx_all[,,i] = resultem$transMtx
+    
+    seqs = generate_seqs(resultem$mu,resultem$sigma,resultem$pi,resultem$transMtx,D,T)
+    print(paste("Iteration",i))
+  }
+  return(list("pi"=pi_all,"transMtx"=transMtx_all,"mu" = mu_all,"sigma" = sigma_all,"llk"=llk_all))
+}
+```
+
+```{r}
+tmp = my_bootstrap(seqs,3,5)
+```
+
+
+
