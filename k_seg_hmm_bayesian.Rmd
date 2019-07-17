@@ -1,0 +1,310 @@
+---
+title: "k segment HMM: Bayesian methods"
+author: "Jitao Wang"
+date: "6/27/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(matrixStats)
+library("gtools")
+library("truncnorm")
+```
+
+Reference:
+1. Statistical Inference in Hidden Markov Models Using k-Segment Constraints 2016 JASA
+2. EM versus Markov chain Monte Carlo for Estimation of Hidden Markov Models: A Computational Perspective 2008 Bayesian Analysis
+
+
+```{r}
+## generate observed sequence with hidden path
+## 4 hidden states
+transMtx = matrix(c(0.95,0.015,0.005,0.03,
+                     0.005,0.98,0.010,0.005,
+                     0.015,0.005,0.90,0.08,
+                     0.05,0.01,0.14,0.8),byrow = TRUE,ncol = 4)
+pi = c(0,0.85,0.05,0.1)
+mu = c(-2,-1,1,3)
+sigma = rep(0.9 ,4)
+
+## 3 hidden states
+# transMtx = matrix(c(0.98,0.015,0.005,
+#                     0.005,0.98,0.015,
+#                     0.015,0.005,0.98),byrow = TRUE,ncol = 3)
+# pi = c(0,0.95,0.05)
+# mu = c(-2,-1,1)
+# sigma = rep(0.9,3)
+
+T = 300
+M = dim(transMtx)[1]
+
+x = rep(NA,T)
+x[1] = sample(1:M,1,prob = pi)
+for (i in 2:T){
+  x[i] = sample(1:M,1,prob = transMtx[x[i-1],])
+}
+
+y = rep(NA,T); y_real = rep(NA,T)
+for (i in 1:T){
+  idx = x[i]
+  y_real[i] = mu[idx]
+  y[i] = rnorm(1,y_real[i],sigma[idx])
+}
+
+NumberofSegments = length(rle(x)$value)
+```
+
+```{r}
+## forward algorithm; aka alpha message
+## T: length of sequence; N: num of class of observed; M: num of hidden states
+## obs: T * 1
+## transMtx: M * M
+## emisMtx: M * N
+## pi: intial prob, M * 1
+## return log alpha message
+lmy_forward_constraint <- function(obs,mu,sigma,transMtx,pi,kmax){
+  T = length(obs)
+  M = length(pi)
+  
+  lA = array(NA,dim=c(M,kmax,T))
+  transMtx_NoDiag = transMtx - diag(diag(transMtx))
+  lpy_x = mapply(obs,FUN = function(x) dnorm(x,mu,sigma,log = TRUE))
+  
+  ## k = 1 at position 1
+  lA[,1,1] =  lpy_x[,1] + log(pi)
+  for (s in 2:T){
+    ## k = 1
+    lA[,1,s] = lA[,1,s-1] + log(diag(transMtx)) + lpy_x[,s]
+  }
+  if (kmax == 1){ return(lA) }
+  
+  for (k in 2:kmax){
+    for (i in 1:M) { lA[i,k,k] = logSumExp(lA[,k-1,k-1] + log(transMtx_NoDiag[,i])) + lpy_x[i,k] } ## k = k at position k
+    if( k < T ){
+      for (s in (k+1):T){
+        for (i in 1:M){
+          tmp = lA[,c(k-1,k),(s-1)] + log(cbind(transMtx_NoDiag[,i],diag(diag(transMtx))[,i]))
+          lA[i,k,s] = logSumExp(tmp) + lpy_x[i,s]
+        }
+      }
+    }
+  }
+  return(lA)
+}
+```
+
+```{r}
+# Forward filtering backward sampling algorithm for k constraint hmm
+my_FFBS_constraint = function(obs,mu,sigma,transMtx,pi,kmax){
+  T = length(obs)
+  M = length(pi)
+  success = 0
+  
+  transMtx_NoDiag = transMtx - diag(diag(transMtx))
+  lA = lmy_forward_constraint(obs,mu,sigma,transMtx,pi,kmax)
+  llk = logSumExp(lA[,,T])
+  
+  while(success<1){
+    lprob = apply(lA[,,T],2,function(x) logSumExp(x))
+    kseg = sample(1:kmax,1,prob = c(exp(lprob-logSumExp(lprob))))
+    x = rep(NA,T); s = kseg;
+    x[T] = sample(1:M,1,prob = exp(lA[,kseg,T]-logSumExp(lA[,kseg,T])))
+    for (j in (T-1):1){
+      if(j>=s){
+        if(s == 1){
+          x[j] = x[j+1]
+        }else{
+          lprob = lA[,c(s-1,s),j] + log(cbind(transMtx_NoDiag[,x[j+1]],diag(diag(transMtx))[,x[j+1]]))
+          tmp = sample(1:length(lprob),1,prob = c(exp(lprob-logSumExp(lprob))))
+          x[j] = ifelse(tmp <= M,tmp,tmp-M)
+          s = s - (x[j] != x[j+1])
+        }
+      }
+    }
+    if(!is.na(x[1])){
+      success = success+1
+    }
+  }
+  return(list("x"=x,"llk"=llk))
+}
+```
+
+```{r}
+## Gibbs sampler for k-segment hmm
+## sample one hidden path given parameters
+## y: observed sequence
+## mu: mean values
+## sigma2_inv: inverse of sigma square
+## alpha,beta: hyperparameter for sigma2_inv
+## A: transMtx
+## pi: intial probability
+## x: hidden path
+## K: number of classes
+## epsilon,kappa: hyperparameters for mu
+## g,h: hyperprior for hyperparameter beta
+## kmax: maximum number of segments
+FB_sampler_one <- function(y,mu,sigma2_inv,beta,A,pi,x,K,epsilon,kappa,alpha,g,h,kmax){
+  sigma2 = 1/sigma2_inv
+  ## update mu
+  for(i in 1:K){
+    S = sum(y[x==i])
+    n = sum(x==i)
+    ## no constraint
+    #mu[i] = rnorm(1,(S+kappa*epsilon*sigma2)/(n+kappa*sigma2),sqrt((sigma2)/(n+kappa*sigma2)))
+    
+    ## truncated normal; to keep increasing order
+    mu[i] = rtruncnorm(n = 1,a = max(-Inf,mu[i-1],na.rm = TRUE),b = min(Inf,mu[i+1],na.rm = TRUE),mean = (S+kappa*epsilon*sigma2[i])/(n+kappa*sigma2[i]),sd = sqrt((sigma2[i])/(n+kappa*sigma2[i])))
+  }
+  
+  ##### update sigma2
+  for(i in 1:K){
+    n = sum(x==i)
+    Sq = sum((y[x==i]-mu[i])^2)
+    sigma2_inv[i] = rgamma(1,alpha+0.5*n,beta+0.5*Sq)
+  }
+  sigma2 = 1/sigma2_inv
+  
+  ##### update beta
+  beta = rgamma(1,g+length(sigma2_inv)*alpha,h+sum(sigma2_inv))
+  
+  ##### update A(transMtx)
+  N_trans = matrix(0,ncol=K,nrow = K)
+  for(i in 1:T-1)
+    N_trans[x[i],x[i+1]] = N_trans[x[i],x[i+1]] + 1
+  for(i in 1:K){
+    A[i,] = rdirichlet(1,N_trans[i,]+1)
+  }
+  
+  ##### update pi
+  pi = rdirichlet(1,rep(1,K)+(x[1] == 1:K))
+  
+  ##### update x
+  tmp = my_FFBS_constraint(y,mu,sqrt(sigma2),A,pi,kmax)
+  x = tmp$x; llk = tmp$llk  ##### calculate after x was updated?
+  
+  return(list("pi"=pi,"A"=A,"mu"=mu,"beta"=beta,"sigma2_inv"=sigma2_inv,"x"=x,"llk"=llk))
+}
+```
+
+```{r}
+## gibbs sampler for k-segment hmm
+## data: one observed sequence
+## K: user-defined number of hidden states
+## kmax: maximum number of sgements
+## burin: number of burnin steps before sampling
+FB_sampler_constraint <- function(data, K, kmax, burnin = 200, thin = 1, num_sample = 1000){
+  ## some constants from data
+  y = data;
+  T = length(y)
+  epsilon = sum(range(y))/2
+  R = diff(range(y))
+  kappa = 1/R^2
+  num = 1
+  
+  ## hyperparameters constant
+  alpha = 2
+  g = 0.2
+  h = 10 / R^2
+  
+  ## random initialization
+  pi = rep(1/K,K)
+  A = matrix(rep(1/K,K*K),ncol = K)
+  mu = sort(rnorm(K,epsilon,1/kappa))
+  beta = rgamma(1,g,h)
+  sigma2_inv = rep(rgamma(1,alpha,beta),K)
+  x = sample(1:K,T,replace = TRUE)
+  
+  ## gibbs sampler
+  ### initialize storage
+  pi_sam = matrix(0,nrow = num_sample,ncol = K)
+  A_sam = array(0,dim=c(K,K,num_sample))
+  mu_sam = matrix(0,nrow = num_sample,ncol = K)
+  beta_sam = rep(0,num_sample)
+  sigma2_inv_sam = matrix(0,nrow = num_sample,ncol = K)
+  x_sam = matrix(0,nrow = num_sample,ncol = T)
+  llk_sam = rep(0,num_sample)
+  
+  ### sampler start
+  #### burnin step
+  for(iter in 1: burnin){
+    print(paste("burin itertion ",iter," start"))
+    hmm_sample = FB_sampler_one(y,mu,sigma2_inv,beta,A,pi,x,K,epsilon,kappa,alpha,g,h,kmax)
+    mu = hmm_sample$mu
+    sigma2_inv = hmm_sample$sigma2_inv
+    beta = hmm_sample$beta
+    A = hmm_sample$A
+    pi = hmm_sample$pi
+    x = hmm_sample$x
+  }
+  
+  ##### sampling
+  for (iter in 1:(thin*num_sample)){
+    hmm_sample = FB_sampler_one(y,mu,sigma2_inv,beta,A,pi,x,K,epsilon,kappa,alpha,g,h,kmax)
+    mu = hmm_sample$mu
+    sigma2_inv = hmm_sample$sigma2_inv
+    beta = hmm_sample$beta
+    A = hmm_sample$A
+    pi = hmm_sample$pi
+    x = hmm_sample$x
+    llk = hmm_sample$llk
+    
+    ##### store the samples
+    if(iter%%thin==0){
+      print(paste("Sample ",num," done"))
+      pi_sam[num,] = pi
+      A_sam[,,num] = A
+      mu_sam[num,] = mu
+      beta_sam[num] = beta
+      sigma2_inv_sam[num,] = sigma2_inv
+      x_sam[num,] = x
+      llk_sam[num] = llk
+      num = num + 1
+    }
+  }
+  
+  return(list("pi"=pi_sam,"A"=A_sam,"mu"=mu_sam,"beta"=beta_sam,"sd"=sqrt(1/sigma2_inv_sam),"x"=x_sam,"llk"=llk_sam))
+}
+```
+
+```{r}
+result = FB_sampler_constraint(y,4,NumberofSegments+10,100,1,200)
+apply(result$mu,-1,mean)  ## estimated mean of different states
+apply(result$sd,-1,mean)  ## estimated standard deviations
+mean(apply(result$x,1,function(x) length(rle(x)$values))) ## mean number of segments
+```
+
+
+
+## Use Posterior distribution to find the number of hidden states
+Reference: 
+Bayesian Methods for Hidden Markov Models: Recursive Computing in the 21st Century 2002 JASA
+
+```{r}
+## Attention !!! not finished, got strange results
+# Determine_num_state = function(y,smax = 5,kmax = NumberofSegments+10,burnin=1000,thin=1,num_sample=1000){
+#   lprobS = matrix(0,ncol = smax,nrow = num_sample)
+#   
+#   ## calculate likelihood eq21
+#   for(k in 2:smax){
+#     lprobS[,k] = FB_sampler_constraint(data = y,K = k,kmax = kmax, burnin = burnin,num_sample = num_sample)$llk
+#   }
+#   
+#   ## add prior
+#   lprobS = lprobS + log(1/Kmax)
+#   
+#   ## normalization
+#   lprobS = apply(lprobS,1,function(x) x-logSumExp(x))
+#   
+#   ## mc calculation eq21
+#   postS = apply(lprobS,1, function(x) exp(logSumExp(x))/num_sample)
+#   return(postS)
+#   
+# }
+# 
+# smax = 6
+# postS = Determine_num_state_constraint(y = y,smax = smax,kmax = NumberofSegments+10,burnin = 1000,num_sample = 1000)
+# postS
+```
+
+
